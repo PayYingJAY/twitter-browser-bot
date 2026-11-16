@@ -1,0 +1,19 @@
+{
+  "headless": false,
+  "max_tweets": 10,
+  "twitter_cookies_file": "twitter_cookies.json",
+  "external_cookies_file": "",
+  "refresh_interval_minutes": 60,
+  "debug_tweet_structure": false,
+  "delay_settings": {
+    "min_delay": 1,
+    "max_delay": 3,
+    "scroll_delay": 2
+  },
+  "ai_type": "doubao",
+  "use_ai_reply": true,
+  "openai_model": "gpt-3.5-turbo",
+  "max_replies": 3,
+  "browse_duration": 30,
+  "ai_reply_max_length": 100
+}
