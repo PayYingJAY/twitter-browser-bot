@@ -1,19 +1,26 @@
 {
+  "ai_mode": "doubao_web",
   "headless": false,
-  "max_tweets": 10,
-  "twitter_cookies_file": "twitter_cookies.json",
-  "external_cookies_file": "",
-  "refresh_interval_minutes": 60,
-  "debug_tweet_structure": false,
-  "delay_settings": {
-    "min_delay": 1,
-    "max_delay": 3,
-    "scroll_delay": 2
+  "max_tweets": 3,
+  "reply_max_length": 100,
+  "like_tweets": true,
+  "interaction_delay_seconds": 15,
+  "api": {
+    "provider": "openai",
+    "protocol": "",
+    "base_url": "",
+    "model": "",
+    "timeout_seconds": 120,
+    "max_output_tokens": 1024,
+    "trust_env": true,
+    "extra_body": {}
   },
-  "ai_type": "doubao",
-  "use_ai_reply": true,
-  "openai_model": "gpt-3.5-turbo",
-  "max_replies": 3,
-  "browse_duration": 30,
-  "ai_reply_max_length": 100
+  "doubao": {
+    "timeout_seconds": 120,
+    "selectors": {
+      "input": "textarea, [contenteditable=\"true\"][role=\"textbox\"]",
+      "assistant": "[data-testid=\"receive_message\"]",
+      "stop": "[data-testid=\"chat_input_local_break_button\"]"
+    }
+  }
 }

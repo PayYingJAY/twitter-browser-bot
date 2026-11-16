@@ -1,38 +1,80 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-推特自动化机器人启动脚本
-"""
+"""Quick-start CLI. API checks never open X or perform social actions."""
+import argparse
+import json
+from pathlib import Path
+from settings import ROOT, PRESETS, load_config, api_settings
+from ai_client import APIClient, AIError
 
-import os
-import sys
+def init_config():
+    path = ROOT / 'config.json'
+    if path.exists():
+        raise ValueError('config.json 已存在；请直接编辑，避免覆盖本地配置')
+    config = json.loads((ROOT / 'config.example.json').read_text(encoding='utf-8-sig'))
+    mode = input('选择模式 [1 豆包网页版 / 2 API，默认 1]：').strip()
+    config['ai_mode'] = 'api' if mode == '2' else 'doubao_web'
+    if mode == '2':
+        print('可用提供方：' + ', '.join(PRESETS))
+        provider = input('提供方 [openai]：').strip() or 'openai'
+        if provider not in PRESETS:
+            raise ValueError('未知提供方')
+        config['api']['provider'] = provider
+        if provider == 'custom':
+            config['api']['protocol'] = input('协议 [openai_chat/openai_responses/anthropic/gemini]：').strip()
+            config['api']['base_url'] = input('API 基础地址（包含 /v1 等版本，不含具体接口）：').strip()
+        config['api']['model'] = input('模型 ID（以提供方控制台为准）：').strip()
+    path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    env = ROOT / '.env'
+    if not env.exists():
+        env.write_text((ROOT / '.env.example').read_text(encoding='utf-8-sig'), encoding='utf-8')
+    print('已生成 config.json 和 .env。API 模式请在 .env 填写 LLM_API_KEY；密钥不会写入 JSON。')
 
 def main():
-    """主函数"""
-    print("🤖 推特自动化机器人")
-    print("=" * 50)
-    print("功能：打开x.com和豆包，等待登录，自动点赞和AI回复")
-    print("=" * 50)
-    
-    # 检查配置文件
-    if not os.path.exists("config.json"):
-        print("❌ 配置文件 config.json 不存在")
-        print("请确保配置文件存在")
-        return
-    
-    # 检查主程序
-    if not os.path.exists("main.py"):
-        print("❌ 主程序 main.py 不存在")
-        print("请确保主程序存在")
-        return
-    
-    # 运行主程序
-    print("🚀 启动主程序...")
+    parser = argparse.ArgumentParser(description='X 浏览互动：豆包网页 / 多协议 API；默认只预览')
+    parser.add_argument('--config', help='本地 JSON 配置路径')
+    parser.add_argument('--init', action='store_true', help='交互式生成本地配置')
+    parser.add_argument('--check', action='store_true', help='检查配置，不发模型请求')
+    parser.add_argument('--test-ai', action='store_true', help='生成一条测试回复，不打开 X')
+    parser.add_argument('--text', default='今天终于完成了第一个 Python 项目，学到了很多！')
+    parser.add_argument('--execute', action='store_true', help='实际点赞并发布评论；默认只预览')
+    args = parser.parse_args()
+    ai = None
     try:
-        import main
-        main.main()
-    except Exception as e:
-        print(f"❌ 程序运行失败: {e}")
+        if args.init:
+            init_config()
+            return 0
+        config = load_config(args.config)
+        if config.get('ai_mode') == 'api':
+            api_settings(config)
+        if args.check:
+            print('配置检查通过。')
+        elif args.test_ai:
+            if config.get('ai_mode') == 'api':
+                ai = APIClient(config)
+            else:
+                from doubao_web import DoubaoWebClient
+                ai = DoubaoWebClient(config)
+                ai.ready()
+            print('AI 连接测试成功：' + ai.generate_reply(args.text))
+        else:
+            from main import run
+            print('运行模式：' + ('实际点赞评论' if args.execute else '只预览'))
+            run(config, execute=args.execute)
+        return 0
+    except FileNotFoundError:
+        print('缺少本地配置；请先运行 python start.py --init')
+        return 1
+    except (ValueError, AIError, RuntimeError) as e:
+        print(str(e))
+        return 1
+    except KeyboardInterrupt:
+        print('已停止。')
+        return 130
+    except Exception:
+        print('运行失败；请检查 Chrome、登录状态和网页选择器。未输出可能含敏感数据的异常详情。')
+        return 1
+    finally:
+        if ai:
+            ai.close()
 
-if __name__ == "__main__":
-    main() 
+if __name__ == '__main__':
+    raise SystemExit(main())
