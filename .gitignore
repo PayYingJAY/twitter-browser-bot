@@ -1,0 +1,35 @@
+# Local configuration and credentials
+config.json
+config.*.json
+!config.example.json
+.env
+.env.*
+!.env.example
+*cookie*
+*token*
+*secret*
+*credential*
+*.pem
+*.key
+*.log
+logs/
+input.txt
+*.sqlite*
+*.db
+# Browser state and downloaded binaries
+chromedriver*
+chrome-profile*/
+user_data/
+browser_data/
+*.png
+*.jpg
+*.jpeg
+*.zip
+# Python and editor state
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
