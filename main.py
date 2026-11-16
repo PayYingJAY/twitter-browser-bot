@@ -7,10 +7,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
 from browser import create_browser
 from ai_client import APIClient, AIError
-from doubao_web import DoubaoWebClient
+from doubao_web import create_doubao_client
 
 def create_ai(config):
-    return APIClient(config) if config.get('ai_mode') == 'api' else DoubaoWebClient(config)
+    return APIClient(config) if config.get('ai_mode') == 'api' else create_doubao_client(config)
 
 def run(config, execute=False):
     ai = None

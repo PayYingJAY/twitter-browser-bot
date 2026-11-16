@@ -89,11 +89,11 @@ class ConfigTests(unittest.TestCase):
 
 class WebsiteTests(unittest.TestCase):
     def test_default_selector_covers_current_contenteditable(self):
-        from doubao_web import DEFAULT_SELECTORS
+        from doubao_selenium import DEFAULT_SELECTORS
         self.assertIn('[contenteditable="true"]',DEFAULT_SELECTORS['input'])
 
     def test_fresh_message_only(self):
-        from doubao_web import DoubaoWebClient
+        from doubao_selenium import DoubaoWebClient
         c=object.__new__(DoubaoWebClient)
         c.config={'doubao':{'timeout_seconds':15}}
         c.selectors={'stop':'stop'}
@@ -104,21 +104,21 @@ class WebsiteTests(unittest.TestCase):
         c._messages=Mock(side_effect=[ [('old','Old reply')], [('old','Old reply')],
                                       [('old','Old reply'),('new','Fresh reply')],
                                       [('old','Old reply'),('new','Fresh reply')] ])
-        with patch('doubao_web.time.sleep'),patch('doubao_web.time.monotonic',side_effect=[0,0,1,2,3,4,9,10]):
+        with patch('doubao_selenium.time.sleep'),patch('doubao_selenium.time.monotonic',side_effect=[0,0,1,2,3,4,9,10]):
             self.assertEqual(c.generate_reply('post'),'Fresh reply')
 
 
 
     def test_existing_broad_selector_is_upgraded(self):
-        from doubao_web import DoubaoWebClient, DEFAULT_SELECTORS
+        from doubao_selenium import DoubaoWebClient, DEFAULT_SELECTORS
         driver=Mock()
-        with patch('doubao_web.create_browser',return_value=driver):
+        with patch('doubao_selenium.create_browser',return_value=driver):
             c=DoubaoWebClient({'doubao':{'selectors':{'assistant':'[data-testid="receive_message"]'}}})
         self.assertEqual(c.selectors['assistant'],DEFAULT_SELECTORS['assistant'])
         self.assertIn('[data-testid="message_text_content"]',c.selectors['assistant'])
 
     def test_streaming_body_blocks_completion_without_stop_button(self):
-        from doubao_web import DoubaoWebClient, DEFAULT_SELECTORS
+        from doubao_selenium import DoubaoWebClient, DEFAULT_SELECTORS
         c=object.__new__(DoubaoWebClient)
         c.selectors=DEFAULT_SELECTORS
         c.driver=Mock()
@@ -130,7 +130,7 @@ class WebsiteTests(unittest.TestCase):
         self.assertFalse(c._generating())
 
     def test_only_body_text_is_returned(self):
-        from doubao_web import DoubaoWebClient, DEFAULT_SELECTORS
+        from doubao_selenium import DoubaoWebClient, DEFAULT_SELECTORS
         c=object.__new__(DoubaoWebClient)
         c.selectors=DEFAULT_SELECTORS
         c.driver=Mock()

@@ -19,3 +19,13 @@
 - Scope: signed-in browser UI smoke verification plus Python adapter regression tests. A Selenium profile uses its own login state; existing user-browser sessions and Cookies are not copied or published.
 
 - Post-fix regression: all 16 unit tests passed, including old-selector migration, assistant-body-only extraction and active-stream blocking.
+
+## Modern free-website backend
+
+- Default Doubao backend is now Playwright with persistent Chrome login, locator auto-waiting and one-shot multiline fill. Doubao no longer needs ChromeDriver; X still uses Selenium.
+- Supports installed Chrome/Edge or explicitly installed Playwright Chromium. Existing local configurations select the new default, while `doubao.backend=selenium` remains an explicit legacy option.
+- Browser profile remains local in `browser_data/doubao`; no personal-browser Cookies are extracted or published.
+- All 22 tests passed, including three actual headless Chrome integration tests against a local HTML fixture. These execute the new Python adapter and cover consecutive replies, stream completion, multiline prompts, metadata exclusion and timeout/no-resend behavior.
+- Earlier signed-in Doubao UI checks apply to the page selectors and prompt format. The new persistent-profile live generation check is tracked separately below.
+
+- Live verification status for the new Playwright-owned profile: awaiting first login; authenticated generation in this profile has not yet been confirmed. The Selenium fallback remains available.

@@ -1,6 +1,6 @@
 # Twitter Browser Bot
 
-Python + Selenium 浏览 X（推特），读取推文并生成回复。两种 AI 模式共用同一套流程：**豆包网页版**或**多协议 API**。默认只预览，加入 `--execute` 才会点赞和发布评论。
+Python + Selenium 浏览 X（推特），Playwright 驱动豆包免费网页版，读取推文并生成回复。两种 AI 模式共用同一套流程：**豆包网页版**或**多协议 API**。默认只预览，加入 `--execute` 才会点赞和发布评论。
 
 ## 5 分钟开始
 
@@ -29,7 +29,7 @@ python start.py --init
 python start.py --test-ai
 ```
 
-在打开的豆包窗口登录并进入空白对话，回终端按 Enter。成功后终端显示测试回复。登录保存在本地独立 Chrome profile，下次可复用。当前网页使用 contenteditable 编辑器，适配器同时支持 textarea；回答只从新的 assistant 消息提取，读取 `data-streaming` 生成状态并等待文字稳定，只取 `message_text_content` 正文，不包含时间、按钮和推荐追问，不会把历史回答或页面任意文字当回复。页面结构变化时可修改 `doubao.selectors`。
+在打开的豆包窗口登录并进入空白对话，回终端按 Enter。成功后终端显示测试回复。豆包默认使用 Playwright 和已安装的 Chrome，登录保存在本地独立 Chrome profile，下次可复用。豆包部分不需要 ChromeDriver；输入用一次 fill 完成，元素由 locator 自动等待。当前网页使用 contenteditable 编辑器，适配器同时支持 textarea；回答只从新的 assistant 消息提取，读取 `data-streaming` 生成状态并等待文字稳定，只取 `message_text_content` 正文，不包含时间、按钮和推荐追问，不会把历史回答或页面任意文字当回复。页面结构变化时可修改 `doubao.selectors`。
 
 ### 方式二：API
 
@@ -51,6 +51,20 @@ python start.py --test-ai
 ```
 
 测试只向所选模型发送一条示例推文，不打开 X。API 模式不需要豆包登录。
+
+### 豆包浏览器设置与迁移
+
+默认配置：
+
+```json
+{"doubao": {"backend": "playwright", "browser_channel": "chrome", "timeout_seconds": 120}}
+```
+
+旧配置没有 `backend` 时自动使用 Playwright，继续使用项目 `browser_data/doubao` 登录目录。先关闭占用该目录的旧程序，不能同时用两个引擎操作同一 profile。不会导入个人 Chrome 主 profile 或导出 Cookies。登录过期时只需在程序窗口重新登录。
+
+可选 `browser_channel: "msedge"` 使用已安装 Edge；使用 Playwright Chromium 时先运行 `python -m playwright install chromium`，再设置 `browser_channel: "chromium"`。若新版在你的机器上遇到兼容问题，设置 `doubao.backend: "selenium"` 可使用旧引擎。
+
+这里的“免费”指豆包网页对账号开放的免费功能和额度，不代表无限调用。官方豆包助手 API 是独立付费服务；将网页登录 Cookie 包装成 API 的第三方代理并非官方免费接口，本项目不依赖它。详见[官方 API 说明](https://docs.volcengine.com/docs/ark/doubao-assistant?lang=zh)。引擎选择参考 [Playwright 自动等待](https://playwright.dev/python/docs/actionability)和[持久化浏览器](https://playwright.dev/python/docs/api/class-browsertype)。
 
 ## 浏览预览和实际发布
 
@@ -101,7 +115,7 @@ X 首次需要手动登录，在首页准备好后回终端按 Enter。`max_twee
 ## 隐私与故障处理
 
 - `.env` 自动加载；已存在的终端环境变量优先。`config.json`、Cookies、日志、浏览器 profile 和虚拟环境均被 Git 忽略。
-- `browser_data/twitter` 和 `browser_data/doubao` 含登录状态，**不要分享**。ChromeDriver 由 Selenium Manager 自动管理；离线时在配置顶层设置 `chromedriver_path`。
+- `browser_data/twitter` 和 `browser_data/doubao` 含登录状态，**不要分享**。X 以及可选旧豆包引擎的 ChromeDriver 由 Selenium Manager 自动管理；离线时在配置顶层设置 `chromedriver_path`。默认豆包 Playwright 引擎不使用该驱动。
 - 仅支持 HTTPS API（localhost 可 HTTP），不跟随重定向，不输出 HTTP 错误正文、请求头和 Key。
 - 网络超时、额度不足、输出为空/截断/被过滤时停止，不自动重发请求、不自动切换模型，也不发送备用模板评论。
 - HTTP 401/403：检查 Key 和账号权限；404：检查基础地址、协议和模型；429：检查额度或速率。错误提示只保留状态码。
@@ -116,8 +130,12 @@ X 首次需要手动登录，在首页准备好后回终端按 Enter。`max_twee
 python -m unittest discover -s tests -v
 ```
 
+另外可运行真实 Chrome 本地页面集成测试（不登录豆包、不访问 X）：Windows PowerShell 先运行 `$env:RUN_BROWSER_TESTS="1"`，macOS/Linux 使用 `RUN_BROWSER_TESTS=1 python -m unittest discover -s tests -v`。验证多行输入、连续两轮生成、排除历史和推荐文字、流式完成和超时不重发。
+
 四种 API 协议覆盖请求、响应解析、错误脱敏和空输出处理；豆包覆盖旧消息排除。真实 API 验证：2026-11-16，火山方舟 Coding Plan / Seed 2.1 Pro 返回有效中文回复。其他厂商仅做协议级模拟测试。豆包网页版：2026-11-16 已登录真实页面连续两轮生成成功，验证新版编辑器、回答正文选择器和 `data-streaming="false"` 完成状态。验证采用已登录浏览器操作及适配器回归测试，未把现有浏览器 Cookies 导入 Selenium 独立 profile；首次使用仍需在程序打开的窗口登录。未进行真实 X 点赞或评论测试。
 
 接口参考：[OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)、[Anthropic Messages](https://platform.claude.com/docs/en/api/messages)、[Gemini generateContent](https://ai.google.dev/api/generate-content)。
 
 MIT License。运行前阅读生成内容，并遵守平台及模型服务规则。
+
+新版 Playwright 验证：22 项测试通过（含真实 Chrome 本地页面集成测试）。真实豆包网页在独立 profile 中的验证状态见 CHANGELOG。

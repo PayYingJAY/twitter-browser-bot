@@ -1,9 +1,7 @@
-"""Doubao website adapter. Only fresh assistant messages are accepted."""
+"""Modern Doubao website client with persistent login and locator auto-waits."""
 import time
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from browser import create_browser
+from pathlib import Path
+from playwright.sync_api import sync_playwright, Error as PlaywrightError
 from ai_client import AIError, SYSTEM, prompt_for, clean_reply
 
 DEFAULT_SELECTORS = {
@@ -15,64 +13,95 @@ DEFAULT_SELECTORS = {
 class DoubaoWebClient:
     def __init__(self, config):
         self.config = config
-        self.driver = create_browser(config, 'doubao')
-        self.selectors = dict(DEFAULT_SELECTORS, **config.get('doubao', {}).get('selectors', {}))
-        # Upgrade the old broad selector in existing local configurations.
+        self.options = config.get('doubao', {})
+        self.selectors = dict(DEFAULT_SELECTORS, **self.options.get('selectors', {}))
         if self.selectors['assistant'] == '[data-testid="receive_message"]':
             self.selectors['assistant'] = DEFAULT_SELECTORS['assistant']
-        self.driver.get('https://www.doubao.com/')
-
-    def ready(self):
-        input('请在豆包窗口完成登录并打开空白对话，然后回到终端按 Enter：')
-        self._input()
+        self.runtime = None
+        self.context = None
+        root = Path(config.get('_root', Path(__file__).parent))
+        profile = root / 'browser_data' / 'doubao'
+        profile.mkdir(parents=True, exist_ok=True)
+        try:
+            self.runtime = sync_playwright().start()
+            channel = self.options.get('browser_channel', 'chrome')
+            if channel not in ('chrome', 'msedge', 'chromium'):
+                raise ValueError('doubao.browser_channel must be chrome, msedge or chromium')
+            self.context = self.runtime.chromium.launch_persistent_context(
+                user_data_dir=str(profile.resolve()),
+                channel=None if channel == 'chromium' else channel,
+                headless=config.get('headless', False), viewport={'width':1280, 'height':900})
+            self.context.set_default_timeout(30000)
+            self.page = self.context.new_page()
+            self.page.goto('https://www.doubao.com/', wait_until='domcontentloaded', timeout=60000)
+        except PlaywrightError:
+            self.close()
+            raise AIError('无法启动豆包浏览器：请安装 Chrome，关闭占用本项目豆包 profile 的窗口；或安装 Chromium 并设置 browser_channel=chromium') from None
+        except Exception:
+            self.close()
+            raise
 
     def _input(self):
-        def visible(driver):
-            return next((x for x in driver.find_elements(By.CSS_SELECTOR, self.selectors['input'])
-                         if x.is_displayed() and x.is_enabled()), False)
-        return WebDriverWait(self.driver, 30).until(visible)
+        field = self.page.locator(f':is({self.selectors["input"]}):visible').last
+        field.wait_for(state='visible')
+        return field
+
+    def ready(self):
+        input('请在豆包窗口完成登录并打开空白对话，然后回到终端按 Enter（下次可复用登录）：')
+        self._input()
 
     def _messages(self):
-        return [(x.id, x.text.strip()) for x in self.driver.find_elements(
-            By.CSS_SELECTOR, self.selectors['assistant']) if x.is_displayed()]
-
-    def _generating(self):
-        # Current Doubao exposes streaming on the answer body itself.
-        bodies = self.driver.find_elements(By.CSS_SELECTOR, self.selectors['assistant'])
-        streaming = any(x.is_displayed() and x.get_attribute('data-streaming') == 'true'
-                        for x in bodies)
-        stopping = any(x.is_displayed() for x in self.driver.find_elements(
-            By.CSS_SELECTOR, self.selectors['stop']))
-        return streaming or stopping
+        return self.page.locator(self.selectors['assistant']).evaluate_all('''nodes => nodes
+            .filter(x => x.getClientRects().length > 0)
+            .map(x => ({text: x.innerText.trim(), streaming: x.getAttribute('data-streaming')}))''')
 
     def generate_reply(self, text):
-        before = dict(self._messages())
-        field = self._input()
-        field.click()
-        field.send_keys(Keys.CONTROL, 'a')
-        field.send_keys(Keys.BACKSPACE)
-        limit = int(self.config.get('reply_max_length', 100))
-        # Shift+Enter inserts line breaks without submitting partial prompts.
-        lines = (SYSTEM + '\n' + prompt_for(text, limit)).splitlines()
-        for index, line in enumerate(lines):
-            if index:
-                field.send_keys(Keys.SHIFT, Keys.ENTER)
-            field.send_keys(line)
-        field.send_keys(Keys.ENTER)
-        deadline = time.monotonic() + float(self.config.get('doubao', {}).get('timeout_seconds', 120))
-        last, changed_at = None, time.monotonic()
-        while time.monotonic() < deadline:
-            messages = self._messages()
-            fresh = [(identity, body) for identity, body in messages if identity not in before and body]
-            if fresh:
-                candidate = fresh[-1][1]
-                if candidate != last:
-                    last, changed_at = candidate, time.monotonic()
-                generating = self._generating()
-                if not generating and time.monotonic() - changed_at >= 4:
-                    return clean_reply(candidate, limit)
-            time.sleep(0.5)
-        raise AIError('豆包未返回新的完整回答；检查登录或 config.json 的 doubao.selectors')
+        try:
+            baseline = self._messages()
+            if any(item['streaming'] == 'true' for item in baseline):
+                raise AIError('豆包仍在生成上一条回答，请等待完成后重试')
+            before = len(baseline)
+            field = self._input()
+            limit = int(self.config.get('reply_max_length', 100))
+            # fill handles both textarea and contenteditable, including multiline text.
+            field.fill(SYSTEM + '\n' + prompt_for(text, limit))
+            field.press('Enter')
+            deadline = time.monotonic() + float(self.options.get('timeout_seconds', 120))
+            last, changed_at = None, time.monotonic()
+            while time.monotonic() < deadline:
+                if self.page.is_closed():
+                    raise AIError('豆包窗口已关闭；生成未完成')
+                messages = self._messages()
+                if len(messages) > before and messages[-1]['text']:
+                    answer = messages[-1]
+                    candidate = answer['text']
+                    if candidate != last:
+                        last, changed_at = candidate, time.monotonic()
+                    stopped = self.page.locator(f':is({self.selectors["stop"]}):visible').count() == 0
+                    stable_seconds = 1 if answer['streaming'] == 'false' else 4
+                    if answer['streaming'] != 'true' and stopped and time.monotonic() - changed_at >= stable_seconds:
+                        return clean_reply(candidate, limit)
+                self.page.wait_for_timeout(250)
+            raise AIError('豆包回答超时：请检查登录、免费额度和网页选择器；未自动重发')
+        except PlaywrightError:
+            raise AIError('豆包页面操作失败：请检查窗口、登录状态或选择器；未自动重发') from None
 
     def close(self):
-        self.driver.quit()
+        try:
+            if self.context:
+                self.context.close()
+        finally:
+            self.context = None
+            if self.runtime:
+                self.runtime.stop()
+                self.runtime = None
+
+
+def create_doubao_client(config):
+    backend = config.get('doubao', {}).get('backend', 'playwright')
+    if backend == 'selenium':
+        from doubao_selenium import DoubaoWebClient as LegacyClient
+        return LegacyClient(config)
+    if backend != 'playwright':
+        raise ValueError('doubao.backend must be playwright or selenium')
+    return DoubaoWebClient(config)

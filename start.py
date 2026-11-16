@@ -51,8 +51,8 @@ def main():
             if config.get('ai_mode') == 'api':
                 ai = APIClient(config)
             else:
-                from doubao_web import DoubaoWebClient
-                ai = DoubaoWebClient(config)
+                from doubao_web import create_doubao_client
+                ai = create_doubao_client(config)
                 ai.ready()
             print('AI 连接测试成功：' + ai.generate_reply(args.text))
         else:
