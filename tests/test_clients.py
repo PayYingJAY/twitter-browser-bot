@@ -97,6 +97,7 @@ class WebsiteTests(unittest.TestCase):
         c=object.__new__(DoubaoWebClient)
         c.config={'doubao':{'timeout_seconds':15}}
         c.selectors={'stop':'stop'}
+        c._generating=Mock(return_value=False)
         c.driver=Mock()
         c.driver.find_elements.return_value=[]
         c._input=Mock(return_value=Mock())
@@ -105,6 +106,38 @@ class WebsiteTests(unittest.TestCase):
                                       [('old','Old reply'),('new','Fresh reply')] ])
         with patch('doubao_web.time.sleep'),patch('doubao_web.time.monotonic',side_effect=[0,0,1,2,3,4,9,10]):
             self.assertEqual(c.generate_reply('post'),'Fresh reply')
+
+
+
+    def test_existing_broad_selector_is_upgraded(self):
+        from doubao_web import DoubaoWebClient, DEFAULT_SELECTORS
+        driver=Mock()
+        with patch('doubao_web.create_browser',return_value=driver):
+            c=DoubaoWebClient({'doubao':{'selectors':{'assistant':'[data-testid="receive_message"]'}}})
+        self.assertEqual(c.selectors['assistant'],DEFAULT_SELECTORS['assistant'])
+        self.assertIn('[data-testid="message_text_content"]',c.selectors['assistant'])
+
+    def test_streaming_body_blocks_completion_without_stop_button(self):
+        from doubao_web import DoubaoWebClient, DEFAULT_SELECTORS
+        c=object.__new__(DoubaoWebClient)
+        c.selectors=DEFAULT_SELECTORS
+        c.driver=Mock()
+        body=Mock();body.is_displayed.return_value=True
+        body.get_attribute.return_value='true'
+        c.driver.find_elements.side_effect=lambda by,selector: [body] if selector==DEFAULT_SELECTORS['assistant'] else []
+        self.assertTrue(c._generating())
+        body.get_attribute.return_value='false'
+        self.assertFalse(c._generating())
+
+    def test_only_body_text_is_returned(self):
+        from doubao_web import DoubaoWebClient, DEFAULT_SELECTORS
+        c=object.__new__(DoubaoWebClient)
+        c.selectors=DEFAULT_SELECTORS
+        c.driver=Mock()
+        body=Mock();body.id='answer-2';body.text='A new reply';body.is_displayed.return_value=True
+        c.driver.find_elements.return_value=[body]
+        self.assertEqual(c._messages(),[('answer-2','A new reply')])
+        self.assertIn('[data-testid="message_text_content"]',c.driver.find_elements.call_args.args[1])
 
 
 class WorkflowTests(unittest.TestCase):

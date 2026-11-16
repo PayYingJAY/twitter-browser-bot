@@ -29,7 +29,7 @@ python start.py --init
 python start.py --test-ai
 ```
 
-在打开的豆包窗口登录并进入空白对话，回终端按 Enter。成功后终端显示测试回复。登录保存在本地独立 Chrome profile，下次可复用。当前网页使用 contenteditable 编辑器，适配器同时支持 textarea；回答只从新的 assistant 消息提取，等待生成结束和文字稳定，不会把历史回答或页面任意文字当回复。页面结构变化时可修改 `doubao.selectors`。
+在打开的豆包窗口登录并进入空白对话，回终端按 Enter。成功后终端显示测试回复。登录保存在本地独立 Chrome profile，下次可复用。当前网页使用 contenteditable 编辑器，适配器同时支持 textarea；回答只从新的 assistant 消息提取，读取 `data-streaming` 生成状态并等待文字稳定，只取 `message_text_content` 正文，不包含时间、按钮和推荐追问，不会把历史回答或页面任意文字当回复。页面结构变化时可修改 `doubao.selectors`。
 
 ### 方式二：API
 
@@ -116,7 +116,7 @@ X 首次需要手动登录，在首页准备好后回终端按 Enter。`max_twee
 python -m unittest discover -s tests -v
 ```
 
-四种 API 协议覆盖请求、响应解析、错误脱敏和空输出处理；豆包覆盖旧消息排除。真实 API 验证：2026-11-16，火山方舟 Coding Plan / Seed 2.1 Pro 返回有效中文回复。其他厂商仅做协议级模拟测试。豆包网页实际生成验证状态见发布说明，登录不可用时不宣称已通过。未进行真实 X 点赞或评论测试。
+四种 API 协议覆盖请求、响应解析、错误脱敏和空输出处理；豆包覆盖旧消息排除。真实 API 验证：2026-11-16，火山方舟 Coding Plan / Seed 2.1 Pro 返回有效中文回复。其他厂商仅做协议级模拟测试。豆包网页版：2026-11-16 已登录真实页面连续两轮生成成功，验证新版编辑器、回答正文选择器和 `data-streaming="false"` 完成状态。验证采用已登录浏览器操作及适配器回归测试，未把现有浏览器 Cookies 导入 Selenium 独立 profile；首次使用仍需在程序打开的窗口登录。未进行真实 X 点赞或评论测试。
 
 接口参考：[OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)、[Anthropic Messages](https://platform.claude.com/docs/en/api/messages)、[Gemini generateContent](https://ai.google.dev/api/generate-content)。
 

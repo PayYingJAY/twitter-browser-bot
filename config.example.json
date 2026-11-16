@@ -19,7 +19,7 @@
     "timeout_seconds": 120,
     "selectors": {
       "input": "textarea, [contenteditable=\"true\"][role=\"textbox\"]",
-      "assistant": "[data-testid=\"receive_message\"]",
+      "assistant": "[data-testid=\"receive_message\"] [data-testid=\"message_text_content\"]",
       "stop": "[data-testid=\"chat_input_local_break_button\"]"
     }
   }

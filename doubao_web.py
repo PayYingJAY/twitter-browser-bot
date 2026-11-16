@@ -8,7 +8,7 @@ from ai_client import AIError, SYSTEM, prompt_for, clean_reply
 
 DEFAULT_SELECTORS = {
     'input': 'textarea, [contenteditable="true"]',
-    'assistant': '[data-testid="receive_message"]',
+    'assistant': '[data-testid="receive_message"] [data-testid="message_text_content"]',
     'stop': '[data-testid="chat_input_local_break_button"]',
 }
 
@@ -17,6 +17,9 @@ class DoubaoWebClient:
         self.config = config
         self.driver = create_browser(config, 'doubao')
         self.selectors = dict(DEFAULT_SELECTORS, **config.get('doubao', {}).get('selectors', {}))
+        # Upgrade the old broad selector in existing local configurations.
+        if self.selectors['assistant'] == '[data-testid="receive_message"]':
+            self.selectors['assistant'] = DEFAULT_SELECTORS['assistant']
         self.driver.get('https://www.doubao.com/')
 
     def ready(self):
@@ -32,6 +35,15 @@ class DoubaoWebClient:
     def _messages(self):
         return [(x.id, x.text.strip()) for x in self.driver.find_elements(
             By.CSS_SELECTOR, self.selectors['assistant']) if x.is_displayed()]
+
+    def _generating(self):
+        # Current Doubao exposes streaming on the answer body itself.
+        bodies = self.driver.find_elements(By.CSS_SELECTOR, self.selectors['assistant'])
+        streaming = any(x.is_displayed() and x.get_attribute('data-streaming') == 'true'
+                        for x in bodies)
+        stopping = any(x.is_displayed() for x in self.driver.find_elements(
+            By.CSS_SELECTOR, self.selectors['stop']))
+        return streaming or stopping
 
     def generate_reply(self, text):
         before = dict(self._messages())
@@ -56,8 +68,7 @@ class DoubaoWebClient:
                 candidate = fresh[-1][1]
                 if candidate != last:
                     last, changed_at = candidate, time.monotonic()
-                generating = any(x.is_displayed() for x in self.driver.find_elements(
-                    By.CSS_SELECTOR, self.selectors['stop']))
+                generating = self._generating()
                 if not generating and time.monotonic() - changed_at >= 4:
                     return clean_reply(candidate, limit)
             time.sleep(0.5)
