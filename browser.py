@@ -5,6 +5,13 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
 def create_browser(config, name):
+    if name == 'twitter':
+        mode = config.get('twitter_browser', {}).get('mode', 'isolated')
+        if mode == 'existing_chrome':
+            from existing_chrome import ExistingChrome
+            return ExistingChrome(config)
+        if mode != 'isolated':
+            raise ValueError('twitter_browser.mode must be isolated or existing_chrome')
     options = Options()
     root = Path(config.get('_root', Path(__file__).parent))
     profile = root / 'browser_data' / name

@@ -36,6 +36,8 @@ def main():
     parser.add_argument('--test-ai', action='store_true', help='生成一条测试回复，不打开 X')
     parser.add_argument('--text', default='今天终于完成了第一个 Python 项目，学到了很多！')
     parser.add_argument('--execute', action='store_true', help='实际点赞并发布评论；默认只预览')
+    parser.add_argument('--continuous', action='store_true', help='持续浏览，使用本地去重记录和随机间隔')
+    parser.add_argument('--check-browser', action='store_true', help='只读检查现有 Chrome 和回复历史，不生成或发布评论')
     args = parser.parse_args()
     ai = None
     try:
@@ -43,7 +45,12 @@ def main():
             init_config()
             return 0
         config = load_config(args.config)
-        if config.get('ai_mode') == 'api':
+        if args.continuous:
+            config['continuous'] = True
+        if args.check_browser:
+            config['continuous'] = True
+            config['_browser_check_only'] = True
+        if config.get('ai_mode') == 'api' and not args.check_browser:
             api_settings(config)
         if args.check:
             print('配置检查通过。')
@@ -57,8 +64,9 @@ def main():
             print('AI 连接测试成功：' + ai.generate_reply(args.text))
         else:
             from main import run
-            print('运行模式：' + ('实际点赞评论' if args.execute else '只预览'))
-            run(config, execute=args.execute)
+            print('运行模式：' + ('浏览器只读检查' if args.check_browser else
+                  '实际点赞评论' if args.execute else '只预览'))
+            run(config, execute=args.execute and not args.check_browser)
         return 0
     except FileNotFoundError:
         print('缺少本地配置；请先运行 python start.py --init')

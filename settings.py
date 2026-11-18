@@ -1,6 +1,7 @@
 """Local configuration and provider presets. Secrets never come from JSON."""
 import json
 import os
+import math
 from pathlib import Path
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
@@ -33,6 +34,35 @@ def load_config(filename=None):
         raise ValueError('max_tweets must be between 1 and 500')
     if not 10 <= int(config.get('reply_max_length', 100)) <= 280:
         raise ValueError('reply_max_length must be between 10 and 280')
+    for key in ('reading_delay_seconds', 'scroll_delay_seconds', 'interaction_delay_seconds_range', 'idle_delay_seconds'):
+        if key in config:
+            value = config[key]
+            if (not isinstance(value, list) or len(value) != 2 or
+                    any(isinstance(item, bool) or not isinstance(item, (float, int)) or not math.isfinite(item) for item in value)
+                    or not 0 < value[0] <= value[1] <= 86400):
+                raise ValueError(f'{key} must be [positive minimum, maximum] in seconds')
+    if type(config.get('continuous', False)) is not bool:
+        raise ValueError('continuous must be true or false')
+    if not 1 <= int(config.get('history_sync_scrolls', 15)) <= 200:
+        raise ValueError('history_sync_scrolls must be between 1 and 200')
+    follow = config.get('follow_back',{})
+    if not isinstance(follow,dict) or type(follow.get('enabled',False)) is not bool:
+        raise ValueError('follow_back must be an object with enabled=true or false')
+    interval=follow.get('check_interval_seconds',300)
+    if isinstance(interval,bool) or not isinstance(interval,(int,float)) or not math.isfinite(interval) or not 60 <= interval <= 86400:
+        raise ValueError('follow_back.check_interval_seconds must be between 60 and 86400')
+    if 'interval_seconds' in follow:
+        interval=follow['interval_seconds']
+        if (not isinstance(interval,list) or len(interval)!=2 or
+                any(isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) for value in interval)
+                or not 0 < interval[0] <= interval[1] <= 86400):
+            raise ValueError('follow_back.interval_seconds must be [positive minimum, maximum]')
+    if 'cooldown_seconds' in follow:
+        steps=follow['cooldown_seconds']
+        if (not isinstance(steps,list) or not 1 <= len(steps) <= 20 or
+                any(isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0 < value <= 604800 for value in steps)
+                or steps!=sorted(steps)):
+            raise ValueError('follow_back.cooldown_seconds must be an increasing list of positive seconds')
     config['_root'] = str(path.parent)
     return config
 

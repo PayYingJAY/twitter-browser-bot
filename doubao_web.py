@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
-from ai_client import AIError, SYSTEM, prompt_for, clean_reply
+from ai_client import AIError, SYSTEM, prompt_for, finish_reply
 
 DEFAULT_SELECTORS = {
     'input': 'textarea, [contenteditable="true"]',
@@ -80,7 +80,7 @@ class DoubaoWebClient:
                     stopped = self.page.locator(f':is({self.selectors["stop"]}):visible').count() == 0
                     stable_seconds = 1 if answer['streaming'] == 'false' else 4
                     if answer['streaming'] != 'true' and stopped and time.monotonic() - changed_at >= stable_seconds:
-                        return clean_reply(candidate, limit)
+                        return finish_reply(candidate, text, limit, getattr(self, 'recent_replies', []))
                 self.page.wait_for_timeout(250)
             raise AIError('豆包回答超时：请检查登录、免费额度和网页选择器；未自动重发')
         except PlaywrightError:

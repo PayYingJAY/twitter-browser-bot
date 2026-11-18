@@ -5,6 +5,20 @@
   "reply_max_length": 100,
   "like_tweets": true,
   "interaction_delay_seconds": 15,
+  "continuous": false,
+  "interaction_delay_seconds_range": [60, 150],
+  "reading_delay_seconds": [4, 10],
+  "scroll_delay_seconds": [3, 7],
+  "idle_delay_seconds": [90, 180],
+  "history_sync_scrolls": 15,
+  "follow_back": {
+    "enabled": false,
+    "interval_seconds": [30,60],
+    "cooldown_seconds": [300,600,1800,3600,43200]
+  },
+  "twitter_browser": {
+    "mode": "isolated"
+  },
   "api": {
     "provider": "openai",
     "protocol": "",

@@ -4,7 +4,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from browser import create_browser
-from ai_client import AIError, SYSTEM, prompt_for, clean_reply
+from ai_client import AIError, SYSTEM, prompt_for, finish_reply
 
 DEFAULT_SELECTORS = {
     'input': 'textarea, [contenteditable="true"]',
@@ -70,7 +70,7 @@ class DoubaoWebClient:
                     last, changed_at = candidate, time.monotonic()
                 generating = self._generating()
                 if not generating and time.monotonic() - changed_at >= 4:
-                    return clean_reply(candidate, limit)
+                    return finish_reply(candidate, text, limit, getattr(self, 'recent_replies', []))
             time.sleep(0.5)
         raise AIError('豆包未返回新的完整回答；检查登录或 config.json 的 doubao.selectors')
 

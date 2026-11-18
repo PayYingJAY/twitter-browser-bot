@@ -1,18 +1,21 @@
 """Canonical browser workflow shared by website and API generation."""
-import re
 import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
 from browser import create_browser
-from ai_client import APIClient, AIError
+from ai_client import APIClient, ReplyRejected, generate_post_reply
 from doubao_web import create_doubao_client
+from post_context import READ_POST, has_context
 
 def create_ai(config):
     return APIClient(config) if config.get('ai_mode') == 'api' else create_doubao_client(config)
 
 def run(config, execute=False):
+    if config.get('continuous', False):
+        from continuous import ContinuousRunner
+        return ContinuousRunner(config, execute).run()
     ai = None
     driver = None
     try:
@@ -34,22 +37,23 @@ def run(config, execute=False):
                 if count >= limit:
                     break
                 try:
-                    links = tweet.find_elements(By.CSS_SELECTOR, 'a[href*="/status/"]')
-                    permalink = next((a.get_attribute('href') for a in links
-                                      if re.search(r'/status/\d+$', a.get_attribute('href') or '')), None)
+                    post = driver.execute_script(f'return ({READ_POST})(arguments[0]);', tweet)
+                    permalink = post['url']
                     if not permalink or permalink in seen:
                         continue
                     seen.add(permalink)
-                    parts = tweet.find_elements(By.CSS_SELECTOR, '[data-testid="tweetText"]')
-                    text = parts[0].text.strip() if parts else ''
-                    if not text:
+                    if not has_context(post):
                         continue
                     own = config.get('my_username', '').strip().lstrip('@').casefold()
                     if own and permalink.split('/')[3].casefold() == own:
                         continue
                     # Finish generation before any social action; failures stop the run.
-                    reply = ai.generate_reply(text)
-                    print(f'\n推文：{text}\n回复：{reply}')
+                    try:
+                        reply = generate_post_reply(ai, post)
+                    except ReplyRejected as error:
+                        print(f'跳过推文 {permalink}：{error}')
+                        continue
+                    print(f'\n推文：{post["text"] or permalink}\n回复：{reply}')
                     count += 1
                     found = True
                     if not execute:
@@ -59,15 +63,25 @@ def run(config, execute=False):
                         likes = tweet.find_elements(By.CSS_SELECTOR, '[data-testid="like"]')
                         if likes:
                             likes[0].click()
+                            wait.until(lambda _: tweet.find_elements(By.CSS_SELECTOR, '[data-testid="unlike"]'))
+                            print('已点赞。')
+                        elif tweet.find_elements(By.CSS_SELECTOR, '[data-testid="unlike"]'):
+                            print('此前已点赞。')
+                        else:
+                            raise RuntimeError('无法确认点赞状态，已停止；未发送本条评论')
                     tweet.find_element(By.CSS_SELECTOR, '[data-testid="reply"]').click()
-                    dialog = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, '[role="dialog"]')))
-                    box = dialog.find_element(By.CSS_SELECTOR, '[data-testid="tweetTextarea_0"]')
+                    # X renders the dialog shell before its editor and send button.
+                    box = wait.until(EC.visibility_of_element_located((
+                        By.CSS_SELECTOR, '[role="dialog"] [data-testid="tweetTextarea_0"]')))
                     box.send_keys(reply)
-                    send = dialog.find_element(By.CSS_SELECTOR, '[data-testid="tweetButton"], [data-testid="tweetButtonInline"]')
+                    send = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
+                        '[role="dialog"] [data-testid="tweetButton"], '
+                        '[role="dialog"] [data-testid="tweetButtonInline"]')))
                     send.click()
                     # Never repeat a send on timeout: delivery may have succeeded.
-                    wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, '[role="dialog"]')))
-                    print('已发布回复。')
+                    wait.until(EC.invisibility_of_element_located((
+                        By.CSS_SELECTOR, '[role="dialog"] [data-testid="tweetTextarea_0"]')))
+                    print('已发布回复：' + permalink)
                     time.sleep(float(config.get('interaction_delay_seconds', 15)))
                 except WebDriverException:
                     if execute:

@@ -145,13 +145,8 @@ class WorkflowTests(unittest.TestCase):
         import main
         driver=Mock()
         tweet=Mock()
-        link=Mock();link.get_attribute.return_value='https://x.com/example/status/123'
-        content=Mock();content.text='A sample post'
-        def elements(by,selector):
-            if selector=='a[href*="/status/"]': return [link]
-            if selector=='[data-testid="tweetText"]': return [content]
-            return [Mock()]
-        tweet.find_elements.side_effect=elements
+        driver.execute_script.return_value={'url':'https://x.com/example/status/123','text':'A sample post'}
+        tweet.find_elements.side_effect=lambda by, selector: [Mock()]
         driver.find_elements.return_value=[tweet]
         ai=Mock();ai.generate_reply.return_value='Relevant reply'
         return main,driver,tweet,ai
@@ -174,7 +169,47 @@ class WorkflowTests(unittest.TestCase):
              self.assertRaises(AIError):
             main.run({'max_tweets':1},execute=True)
         tweet.find_element.assert_not_called()
-        self.assertEqual(tweet.find_elements.call_count,2)
+        tweet.find_elements.assert_not_called()
+
+    def test_execute_likes_and_sends_once(self):
+        main,driver,tweet,ai=self.setup_workflow()
+        original=tweet.find_elements.side_effect
+        like=Mock(); unlike=Mock(); dialog=Mock()
+        tweet.find_elements.side_effect=lambda by,selector: ([like] if selector=='[data-testid="like"]'
+            else [unlike] if selector=='[data-testid="unlike"]' else original(by,selector))
+        with patch('main.create_browser',return_value=driver),patch('main.create_ai',return_value=ai), \
+             patch('main.WebDriverWait') as wait,patch('builtins.input',return_value=''),patch('main.time.sleep'):
+            wait.return_value.until.return_value=dialog
+            main.run({'max_tweets':1,'like_tweets':True},execute=True)
+        like.click.assert_called_once()
+        dialog.send_keys.assert_called_once_with('Relevant reply')
+        dialog.click.assert_called_once()
+
+    def test_unknown_like_state_stops_before_comment(self):
+        main,driver,tweet,ai=self.setup_workflow()
+        original=tweet.find_elements.side_effect
+        tweet.find_elements.side_effect=lambda by,selector: ([] if selector in (
+            '[data-testid="like"]','[data-testid="unlike"]') else original(by,selector))
+        with patch('main.create_browser',return_value=driver),patch('main.create_ai',return_value=ai), \
+             patch('main.WebDriverWait'),patch('builtins.input',return_value=''),patch('main.time.sleep'), \
+             self.assertRaisesRegex(RuntimeError,'无法确认点赞状态'):
+            main.run({'max_tweets':1,'like_tweets':True},execute=True)
+        tweet.find_element.assert_not_called()
+
+    def test_send_confirmation_timeout_never_repeats_send(self):
+        from selenium.common.exceptions import TimeoutException
+        main,driver,tweet,ai=self.setup_workflow()
+        original=tweet.find_elements.side_effect
+        unlike=Mock(); dialog=Mock()
+        tweet.find_elements.side_effect=lambda by,selector: ([] if selector=='[data-testid="like"]'
+            else [unlike] if selector=='[data-testid="unlike"]' else original(by,selector))
+        with patch('main.create_browser',return_value=driver),patch('main.create_ai',return_value=ai), \
+             patch('main.WebDriverWait') as wait,patch('builtins.input',return_value=''),patch('main.time.sleep'), \
+             self.assertRaisesRegex(RuntimeError,'避免重复发送'):
+            wait.return_value.until.side_effect=[Mock(),dialog,dialog,TimeoutException()]
+            main.run({'max_tweets':1,'like_tweets':True},execute=True)
+        unlike.click.assert_not_called()
+        dialog.click.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()
