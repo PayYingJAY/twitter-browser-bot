@@ -2,6 +2,8 @@
 import json
 import os
 import math
+import re
+from datetime import time
 from pathlib import Path
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
@@ -19,6 +21,25 @@ PRESETS = {
     'ollama': ('openai_chat', 'http://localhost:11434/v1', 'LLM_API_KEY'),
     'custom': ('openai_chat', '', 'LLM_API_KEY'),
 }
+
+
+def daily_work_hours(config):
+    hours = config.get('work_hours')
+    if hours is None:
+        return None
+    if not isinstance(hours, dict):
+        raise ValueError('work_hours must be an object with start and end times or null')
+    times = []
+    for key in ('start', 'end'):
+        value = hours.get(key)
+        if not isinstance(value, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value):
+            raise ValueError(f'work_hours.{key} must be a 24-hour time in HH:MM format')
+        times.append(time.fromisoformat(value))
+    start, end = times
+    if start >= end:
+        raise ValueError('work_hours.start must be before work_hours.end on the same day')
+    return start, end
+
 
 def load_config(filename=None):
     path = Path(filename).resolve() if filename else ROOT / 'config.json'
@@ -43,6 +64,7 @@ def load_config(filename=None):
                 raise ValueError(f'{key} must be [positive minimum, maximum] in seconds')
     if type(config.get('continuous', False)) is not bool:
         raise ValueError('continuous must be true or false')
+    daily_work_hours(config)
     if not 1 <= int(config.get('history_sync_scrolls', 15)) <= 200:
         raise ValueError('history_sync_scrolls must be between 1 and 200')
     follow = config.get('follow_back',{})

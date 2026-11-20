@@ -6,14 +6,21 @@ import os
 import random
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from activity import ActivityStore, RunnerLock, own_replies, post_id
 from ai_client import ReplyRejected, generate_post_reply
 from post_context import POST_SUMMARY, READ_POST, has_context
+from settings import daily_work_hours
+
+
+POST_RENDER_TIMEOUT_MS = 30000
+SEND_CONFIRMATION_TIMEOUT_MS = 30000
+BEIJING = timezone(timedelta(hours=8))
 
 
 class StopRequested(Exception):
@@ -24,6 +31,7 @@ class ContinuousRunner:
     def __init__(self, config, execute):
         self.config = config
         self.execute = execute
+        self.work_hours = daily_work_hours(config) if execute and not config.get('_browser_check_only') else None
         self.root = Path(config.get('_root', Path(__file__).parent))
         self.account = config.get('my_username', '').strip().lstrip('@').casefold()
         if not re.fullmatch(r'[a-z0-9_]{1,15}', self.account):
@@ -71,11 +79,41 @@ class ContinuousRunner:
         if self.stop_file.exists():
             raise StopRequested
 
+    def in_work_hours(self, now=None):
+        if self.work_hours is None:
+            return True
+        start, end = self.work_hours
+        now = datetime.now(BEIJING) if now is None else now.astimezone(BEIJING)
+        return start <= now.time() < end
+
+    def wait_for_work_hours(self, page):
+        self.check_stop()
+        now = datetime.now(BEIJING)
+        if self.in_work_hours(now):
+            return False
+        start, _ = self.work_hours
+        next_start = datetime.combine(now.date(), start, tzinfo=BEIJING)
+        if next_start <= now:
+            next_start += timedelta(days=1)
+        self.current_url = None
+        self.status('off_hours', resumes_at=next_start.isoformat(timespec='seconds'))
+        self.log.info('已进入时段外待机，预计北京时间 %s 恢复', next_start.strftime('%m-%d %H:%M'))
+        while not self.in_work_hours():
+            self.check_stop()
+            if page.is_closed():
+                raise RuntimeError('程序标签页已关闭，已停止互动')
+            page.wait_for_timeout(1000)
+        self.check_stop()
+        self.log.info('已到运行时段，恢复运行')
+        return True
+
     def pause(self, seconds, page, state='waiting'):
         self.status(state, wait_seconds=round(seconds, 1))
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self.check_stop()
+            if state != 'syncing_history' and not self.in_work_hours():
+                return
             if page.is_closed():
                 raise RuntimeError('程序标签页已关闭，已停止互动')
             if state in ('waiting','idle') and self.try_follow_back(page):
@@ -85,6 +123,10 @@ class ContinuousRunner:
     def random_pause(self, key, default, page, state='waiting'):
         lower, upper = self.config.get(key, default)
         self.pause(random.uniform(lower, upper), page, state)
+
+    def schedule_next_interaction(self):
+        lower, upper = self.config.get('interaction_delay_seconds_range', [60, 150])
+        self.wait_until = time.monotonic() + random.uniform(lower, upper)
 
     def check_page(self, page, account=False, action_alerts=True):
         self.check_stop()
@@ -133,7 +175,7 @@ class ContinuousRunner:
         return page
 
     def try_follow_back(self, feed):
-        if not self.follow_back or self._following:
+        if not self.follow_back or self._following or not self.in_work_hours():
             return False
         self._following=True
         previous_phase,previous_page=self.phase,self.active_page
@@ -226,16 +268,34 @@ class ContinuousRunner:
         return False
 
     def process(self, item, page):
+        if not self.in_work_hours():
+            return False
         self.phase = 'candidate'
         self.active_page = page
-        identity = post_id(item['url'])
-        self.current_url = item['url']
-        page.goto(item['url'], wait_until='domcontentloaded', timeout=60000)
-        target = page.locator('[data-testid="tweet"]').filter(
-            has=page.locator(f'a[href$="/status/{identity}"]:has(time)')).first
-        target.wait_for(state='visible', timeout=30000)
+        url = item['url']
+        identity = post_id(url)
+        self.current_url = url
+        try:
+            response = page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            if response is not None and response.status == 429:
+                raise RuntimeError('X 返回限流状态，已暂停；未自动重试')
+            if response is not None and response.status in (404, 410):
+                self.guard(page)
+                self.skipped += 1
+                self.log.info('跳过不可用推文（HTTP %s）：%s', response.status, url)
+                return False
+            target = page.locator('[data-testid="tweet"]').filter(
+                has=page.locator(f'a[href$="/status/{identity}"]:has(time)')).first
+            target.wait_for(state='visible', timeout=POST_RENDER_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            self.guard(page)
+            self.skipped += 1
+            self.log.info('跳过加载超时的推文：%s', url)
+            return False
         self.guard(page, account=True)
         self.random_pause('reading_delay_seconds', [4, 10], page, 'reading')
+        if not self.in_work_hours():
+            return False
         if self.store.contains(identity) or self.visible_own_reply(page, identity):
             self.skipped += 1
             self.log.info('跳过已评论：%s', item['url'])
@@ -266,8 +326,12 @@ class ContinuousRunner:
         if self.config.get('like_tweets', True):
             like = target.locator('[data-testid="like"]')
             if like.count():
+                if not self.in_work_hours():
+                    return False
                 like.first.click(timeout=10000)
             target.locator('[data-testid="unlike"]').first.wait_for(state='visible', timeout=10000)
+        if not self.in_work_hours():
+            return False
         reply_control.click(timeout=10000)
         box = page.locator('[role="dialog"] [data-testid="tweetTextarea_0"]').last
         box.wait_for(state='visible', timeout=20000)
@@ -275,14 +339,25 @@ class ContinuousRunner:
         self.guard(page, account=True)
         send = page.locator('[role="dialog"] [data-testid="tweetButton"], '
                             '[role="dialog"] [data-testid="tweetButtonInline"]').last
+        if not self.in_work_hours():
+            return False
         if not self.store.reserve_send(identity, reply):
             raise RuntimeError('该推文已有发送记录，已停止本次提交')
         self.status('sending')
         # Durable reservation happens before the only click. Ambiguous delivery is never retried.
-        with page.expect_response(lambda response: '/CreateTweet' in response.url and
-                                  response.request.method == 'POST', timeout=30000) as sent:
-            send.click(timeout=15000)
-        response = sent.value
+        try:
+            with page.expect_response(lambda response: '/CreateTweet' in response.url and
+                                      response.request.method == 'POST', timeout=SEND_CONFIRMATION_TIMEOUT_MS) as sent:
+                send.click(timeout=15000)
+            response = sent.value
+        except PlaywrightTimeoutError:
+            self.store.mark_send_pending(identity)
+            self.skipped += 1
+            self.log.warning('评论发布确认超时，已标记待核实：%s', url)
+            self.guard(page)
+            self.schedule_next_interaction()
+            self.status('running')
+            return False
         if response.status != 200:
             raise RuntimeError(f'X 发送返回 HTTP {response.status}；已暂停，发送记录保留，不自动重发')
         records = own_replies(response.json(), self.account)
@@ -312,6 +387,7 @@ class ContinuousRunner:
             feed = self.driver.page
             self.pages.append(feed)
             feed.on('response', self.observe_response)
+            self.wait_for_work_hours(feed)
             detail = None
             if not self.config.get('_browser_check_only') and self.history_is_fresh():
                 self.log.info('复用 10 分钟内的历史同步结果：%d 条；候选页仍逐条检查',self.store.count())
@@ -336,12 +412,21 @@ class ContinuousRunner:
             idle = 0
             last_sync = time.monotonic()
             while True:
+                if self.wait_for_work_hours(feed):
+                    self.phase = 'feed'
+                    self.active_page = feed
+                    self.status('running')
+                    feed.goto('https://x.com/home', wait_until='domcontentloaded', timeout=60000)
+                    seen.clear()
+                    idle = 0
                 self.guard(feed, account=True)
                 self.try_follow_back(feed)
                 candidates = feed.locator('[data-testid="tweet"]').evaluate_all(POST_SUMMARY)
                 found = False
                 for item in candidates:
                     self.check_stop()
+                    if not self.in_work_hours():
+                        break
                     identity = post_id(item['url'])
                     if identity in seen:
                         continue
@@ -354,19 +439,24 @@ class ContinuousRunner:
                     if remaining > 0:
                         self.pause(remaining, feed)
                     self.try_follow_back(feed)
+                    if not self.in_work_hours():
+                        break
                     if detail is None or detail.is_closed():
                         detail = self.new_work_page(feed.context)
                     if self.process(item, detail):
                         self.completed += 1
-                        self.wait_until = time.monotonic() + random.uniform(
-                            *self.config.get('interaction_delay_seconds_range', [60, 150]))
+                        self.schedule_next_interaction()
                         self.status('running')
+                if not self.in_work_hours():
+                    continue
                 idle = 0 if found else idle+1
                 feed.evaluate('(dy) => window.scrollBy(0,dy)', random.randint(400, 850))
                 self.random_pause('scroll_delay_seconds', [3, 7], feed, 'browsing')
                 if idle >= 5:
                     self.log.info('暂时没有新推文，休息后刷新首页')
                     self.random_pause('idle_delay_seconds', [90, 180], feed, 'idle')
+                    if not self.in_work_hours():
+                        continue
                     if time.monotonic()-last_sync > 1800:
                         history = self.new_work_page(feed.context)
                         detail = self.sync_history(history, detail)

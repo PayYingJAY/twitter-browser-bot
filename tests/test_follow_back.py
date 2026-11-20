@@ -1,6 +1,7 @@
 import tempfile
 import json
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -133,6 +134,22 @@ class FollowBackTests(unittest.TestCase):
             uniform.assert_called_once_with(30,60)
             self.assertEqual(worker.next_check,1800000045)
             store.close()
+
+    def test_closing_before_follow_click_leaves_no_reservation(self):
+        with tempfile.TemporaryDirectory() as directory, closing(ActivityStore(Path(directory) / 'history.db', 'owner')) as store:
+            runner = Mock(store=store, account='owner', config={})
+            runner.in_work_hours.return_value = False
+            worker = FollowBackWorker(runner)
+            worker.page = Mock(url='https://x.com/owner/verified_followers')
+            worker.page.is_closed.return_value = False
+            control = worker.page.locator.return_value
+            control.evaluate_all.return_value = [{'id': '100', 'handle': 'friend'}]
+            control.get_attribute.return_value = 'Follow back'
+            control.inner_text.return_value = 'Follow back'
+            with patch.object(worker, 'feedback', return_value=(None, {})):
+                self.assertFalse(worker.tick(Mock()))
+            control.click.assert_not_called()
+            self.assertIsNone(store.follow_status('100'))
 
     def test_follow_schedule_validation(self):
         with tempfile.TemporaryDirectory() as directory:

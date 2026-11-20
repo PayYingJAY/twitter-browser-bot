@@ -3,12 +3,15 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import Mock, patch
 from contextlib import contextmanager
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from activity import ActivityStore, RunnerLock, own_replies, post_id
-from continuous import ContinuousRunner, StopRequested
-from settings import load_config
+from continuous import BEIJING, ContinuousRunner, StopRequested
+from settings import daily_work_hours, load_config
 
 
 def reply_response(parent='123', identity='456', account='owner', text='A specific reply'):
@@ -25,6 +28,7 @@ class ActivityTests(unittest.TestCase):
             path = Path(directory) / 'history.db'
             first = ActivityStore(path, 'Owner')
             self.assertTrue(first.reserve_send('123', 'uncertain delivery'))
+            first.mark_send_pending('123')
             first.close()
             second = ActivityStore(path, '@owner')
             self.assertTrue(second.contains('123'))
@@ -64,9 +68,9 @@ class ActivityTests(unittest.TestCase):
 
 class ContinuousTests(unittest.TestCase):
     @contextmanager
-    def make_runner(self, directory):
+    def make_runner(self, directory, **config):
         runner = ContinuousRunner({'_root': directory, 'my_username': 'owner',
-            'twitter_browser': {'mode': 'existing_chrome'}}, execute=True)
+            'twitter_browser': {'mode': 'existing_chrome'}, **config}, execute=True)
         runner.store = ActivityStore(Path(directory) / 'activity.db', 'owner')
         runner.network_limit = False
         try:
@@ -77,12 +81,117 @@ class ContinuousTests(unittest.TestCase):
                 runner.log.removeHandler(handler)
                 handler.close()
 
+    def test_beijing_work_hours_include_opening_and_exclude_closing(self):
+        hours = {'start': '09:00', 'end': '22:00'}
+        with tempfile.TemporaryDirectory() as directory, self.make_runner(directory, work_hours=hours) as runner:
+            for instant, expected in [('00:59:59', False), ('01:00:00', True),
+                                      ('13:59:59', True), ('14:00:00', False)]:
+                with self.subTest(instant=instant):
+                    now = datetime.fromisoformat(f'2026-11-18T{instant}+00:00')
+                    self.assertEqual(runner.in_work_hours(now), expected)
+
+    def test_off_hours_waits_until_next_morning(self):
+        hours = {'start': '09:00', 'end': '22:00'}
+        closing = datetime(2026, 11, 18, 22, tzinfo=BEIJING)
+        opening = datetime(2026, 11, 19, 9, tzinfo=BEIJING)
+        with tempfile.TemporaryDirectory() as directory, self.make_runner(directory, work_hours=hours) as runner:
+            page = Mock()
+            page.is_closed.return_value = False
+            with patch('continuous.datetime', wraps=datetime) as clock, patch.object(runner, 'status') as status:
+                clock.now.side_effect = [closing, closing, opening]
+                self.assertTrue(runner.wait_for_work_hours(page))
+            status.assert_called_once_with('off_hours', resumes_at='2026-11-19T09:00:00+08:00')
+            page.wait_for_timeout.assert_called_once_with(1000)
+
+    def test_closing_during_generation_prevents_interaction(self):
+        hours = {'start': '09:00', 'end': '22:00'}
+        with tempfile.TemporaryDirectory() as directory, self.make_runner(directory, work_hours=hours) as runner:
+            url = 'https://x.com/other/status/123'
+            page = Mock(url=url)
+            page.goto.return_value.status = 200
+            target = page.locator.return_value.filter.return_value.first
+            target.evaluate.return_value = {'url': url, 'text': 'A test post'}
+            control = target.locator.return_value
+            control.count.return_value = 1
+            runner.ai = Mock()
+            with patch('continuous.datetime', wraps=datetime) as clock, \
+                 patch.object(runner, 'guard'), patch.object(runner, 'random_pause'), \
+                 patch.object(runner, 'visible_own_reply', return_value=False):
+                clock.now.return_value = datetime(2026, 11, 18, 21, 59, tzinfo=BEIJING)
+
+                def generate_reply(_):
+                    clock.now.return_value = datetime(2026, 11, 18, 22, tzinfo=BEIJING)
+                    return 'A test reply'
+
+                runner.ai.generate_reply.side_effect = generate_reply
+                self.assertFalse(runner.process({'url': url}, page))
+            runner.ai.generate_reply.assert_called_once()
+            control.first.click.assert_not_called()
+            page.expect_response.assert_not_called()
+            self.assertFalse(runner.store.contains('123'))
+
+    def test_work_hours_reject_invalid_ranges(self):
+        self.assertIsNone(daily_work_hours({}))
+        for hours in [True, {'start': '9:00', 'end': '22:00'}, {'start': '09:00', 'end': '24:00'},
+                      {'start': '22:00', 'end': '09:00'}, {'start': '09:00', 'end': '09:00'}]:
+            with self.subTest(hours=hours), self.assertRaises(ValueError):
+                daily_work_hours({'work_hours': hours})
+
     def test_own_and_previously_replied_are_filtered_before_model(self):
         with tempfile.TemporaryDirectory() as directory, self.make_runner(directory) as runner:
             runner.store.remember('123', '456', 'old reply', 'imported')
             self.assertFalse(runner.candidate_is_new({'url': 'https://x.com/OWNER/status/789', 'text': 'self'}))
             self.assertFalse(runner.candidate_is_new({'url': 'https://x.com/other/status/123', 'text': 'old'}))
             self.assertTrue(runner.candidate_is_new({'url': 'https://x.com/other/status/777', 'text': 'new'}))
+
+    def test_navigation_timeout_skips_without_generating_a_reply(self):
+        with tempfile.TemporaryDirectory() as directory, self.make_runner(directory) as runner:
+            page = Mock(url='https://x.com/other/status/123')
+            page.goto.side_effect = PlaywrightTimeoutError('navigation timeout')
+            page.locator.return_value.count.return_value = 0
+            page.locator.return_value.all_text_contents.return_value = []
+            runner.ai = Mock()
+            self.assertFalse(runner.process({'url': page.url}, page))
+            self.assertEqual(runner.skipped, 1)
+            runner.ai.generate_reply.assert_not_called()
+            self.assertFalse(runner.store.contains('123'))
+
+    def test_navigation_timeout_on_login_page_still_pauses(self):
+        with tempfile.TemporaryDirectory() as directory, self.make_runner(directory) as runner:
+            page = Mock(url='https://x.com/i/flow/login')
+            page.goto.side_effect = PlaywrightTimeoutError('navigation timeout')
+            with self.assertRaisesRegex(RuntimeError, '登录'):
+                runner.process({'url': 'https://x.com/other/status/123'}, page)
+            self.assertEqual(runner.skipped, 0)
+
+    def test_send_confirmation_timeout_preserves_pending_reply(self):
+        @contextmanager
+        def unconfirmed_response(*args, **kwargs):
+            yield
+            raise PlaywrightTimeoutError('send confirmation timeout')
+
+        with tempfile.TemporaryDirectory() as directory, self.make_runner(directory) as runner:
+            url = 'https://x.com/other/status/123'
+            page = Mock(url=url)
+            page.goto.return_value.status = 200
+            target = page.locator.return_value.filter.return_value.first
+            target.evaluate.return_value = {'url': url, 'text': 'A test post'}
+            target.locator.return_value.count.return_value = 1
+            page.expect_response.side_effect = unconfirmed_response
+            runner.ai = Mock()
+            runner.ai.generate_reply.return_value = 'A test reply'
+            with patch.object(runner, 'guard'), patch.object(runner, 'random_pause'), \
+                 patch.object(runner, 'visible_own_reply', return_value=False), \
+                 patch('continuous.time.monotonic', return_value=100), \
+                 patch('continuous.random.uniform', return_value=75):
+                self.assertFalse(runner.process({'url': url}, page))
+            page.locator.return_value.last.click.assert_called_once()
+            self.assertEqual(runner.skipped, 1)
+            self.assertEqual(runner.wait_until, 175)
+            self.assertEqual(runner.store.db.execute('SELECT status FROM replies WHERE post_id=?', ('123',)).fetchone(),
+                             ('pending',))
+            self.assertFalse(runner.candidate_is_new({'url': url, 'text': 'A test post'}))
+            self.assertFalse(runner.store.reserve_send('123', 'must not resend'))
 
     def test_stop_file_and_platform_limit_stop_actions(self):
         with tempfile.TemporaryDirectory() as directory, self.make_runner(directory) as runner:

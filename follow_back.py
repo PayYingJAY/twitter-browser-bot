@@ -230,6 +230,9 @@ class FollowBackWorker:
         if not (re.fullmatch(r'(回关|follow back)(\s*@[a-z0-9_]+)?',label,re.I) or
                 re.fullmatch(r'回关|follow back',text,re.I)):
             return False
+        self.runner.check_stop()
+        if not self.runner.in_work_hours():
+            return False
         if not self.store.reserve_follow(identity,handle):
             return False
         self.runner.phase = 'follow_back'

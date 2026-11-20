@@ -6,6 +6,7 @@
   "like_tweets": true,
   "interaction_delay_seconds": 15,
   "continuous": false,
+  "work_hours": {"start": "09:00", "end": "22:00"},
   "interaction_delay_seconds_range": [60, 150],
   "reading_delay_seconds": [4, 10],
   "scroll_delay_seconds": [3, 7],

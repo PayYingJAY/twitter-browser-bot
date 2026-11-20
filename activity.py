@@ -71,6 +71,11 @@ class ActivityStore:
                 (self.account, identity, text))
         return cursor.rowcount == 1
 
+    def mark_send_pending(self, identity):
+        with self.db:
+            self.db.execute('''UPDATE replies SET status='pending', updated_at=CURRENT_TIMESTAMP
+                WHERE account=? AND post_id=? AND status='sending' ''', (self.account, identity))
+
     def remember(self, identity, reply_id, text, status='posted'):
         with self.db:
             self.db.execute('''INSERT INTO replies (account,post_id,status,reply_id,reply_text)

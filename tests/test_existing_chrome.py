@@ -116,7 +116,8 @@ class RealAttachmentTests(unittest.TestCase):
                     document.body.appendChild(d);setTimeout(()=>{const b=document.createElement('div');
                     b.contentEditable='true';b.style.minHeight='30px';b.dataset.testid='tweetTextarea_0';
                     const s=document.createElement('button');s.dataset.testid='tweetButton';s.textContent='Send';
-                    s.onclick=async()=>{await fetch('/i/api/graphql/test/CreateTweet',{method:'POST',body:b.innerText});d.remove()};
+                    s.onclick=async()=>{const parent=location.pathname.split('/').pop();
+                    await fetch('/i/api/graphql/test/CreateTweet?parent='+parent,{method:'POST',body:b.innerText});d.remove()};
                     d.append(b,s)},200)}</script>'''
                 follow_fixture='''<a data-testid="AppTabBar_Profile_Link" href="/owner">Profile</a>
                     <aside><div data-testid="UserCell"><button data-testid="900-follow"
@@ -147,9 +148,18 @@ class RealAttachmentTests(unittest.TestCase):
                                 body=json.dumps({'errors':[{'code':161,'message':'Follow rate limit: too quickly'}]}))
                     elif '/CreateTweet' in route.request.url:
                         submissions.append(route.request.post_data)
-                        route.fulfill(status=200,content_type='application/json',body=json.dumps(reply_response()))
+                        parent=route.request.url.rsplit('=',1)[-1]
+                        if parent=='129':
+                            route.abort()
+                        else:
+                            reply_id='457' if parent=='130' else '456'
+                            route.fulfill(status=200, content_type='application/json',
+                                          body=json.dumps(reply_response(parent=parent, identity=reply_id)))
                     else:
                         identity=post_id(route.request.url) or '123'
+                        if identity=='128':
+                            route.fulfill(status=200, content_type='text/html', body='<main>Post unavailable</main>')
+                            return
                         html=fixture.replace('/status/123','/status/'+identity)
                         if identity in ('125','126','127'):
                             media='''<div data-testid="videoPlayer"><video></video></div>'''
@@ -193,7 +203,12 @@ class RealAttachmentTests(unittest.TestCase):
                     finally:
                         driver.page.remove_listener('response',worker.observe)
                     item={'url':'https://x.com/other/status/123','text':'A local fixture post'}
-                    with patch.object(continuous,'random_pause'):
+                    with patch.object(continuous,'random_pause'), patch('continuous.POST_RENDER_TIMEOUT_MS', 300):
+                        self.assertFalse(continuous.process({'url':'https://x.com/other/status/128'},driver.page))
+                        self.assertEqual(continuous.skipped,1)
+                        self.assertFalse(continuous.store.contains('128'))
+                        continuous.ai.generate_reply.assert_not_called()
+                        self.assertEqual(submissions,[])
                         self.assertTrue(continuous.process(item,driver.page))
                         self.assertFalse(continuous.process(item,driver.page))
                     self.assertEqual(submissions,['Specific fixture reply'])
@@ -227,6 +242,14 @@ class RealAttachmentTests(unittest.TestCase):
                         else:
                             self.assertTrue(post['has_video'])
                             self.assertEqual(post['captions'],'Train services resume next Monday.')
+                    timeout_item={'url':'https://x.com/other/status/129', 'text':'Unconfirmed fixture post'}
+                    next_item={'url':'https://x.com/other/status/130', 'text':'Next fixture post'}
+                    continuous.ai.generate_reply.side_effect=['Unconfirmed fixture reply', 'Next fixture reply']
+                    with patch.object(continuous,'random_pause'), patch('continuous.SEND_CONFIRMATION_TIMEOUT_MS',1800):
+                        self.assertFalse(continuous.process(timeout_item,driver.page))
+                        self.assertFalse(continuous.candidate_is_new(timeout_item))
+                        self.assertTrue(continuous.process(next_item,driver.page))
+                    self.assertEqual(submissions,['Specific fixture reply', 'Unconfirmed fixture reply', 'Next fixture reply'])
                 finally:
                     driver.page.unroute('https://x.com/**',route_fixture)
                     driver.page.unroute('https://pbs.twimg.com/**')
